@@ -96,7 +96,7 @@ model_rrf
 model_rrf$finalModel
 ```
 
-The figures below compare the quality of the model obtained with this work to that of the group which conducted the experiments and wrote the paper describing their work.  The first table is a normalized confusion matrix from the website where the data was obtained.  The second table is a comparable normalized confusion matrix using the model created from this work.
+The tables below compare the quality of the model obtained with this work to that of the group which conducted the experiments and wrote the paper describing their work.  The first table is a normalized confusion matrix from the website where the data was obtained.  The second table is a comparable normalized confusion matrix using the model created from this work.
 
 ```{r model_norm_cm, echo=FALSE, results='markup', warning=FALSE, message=FALSE, cache=TRUE}
 puc_rio_norm_cm <- data.frame(A=c(0.78,0.05, 0.03, 0.02, 0.00),
