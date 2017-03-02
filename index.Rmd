@@ -1,5 +1,5 @@
 ---
-title: "Practical Machine Learning Course Project"
+title: "Qualitative Activity Recognition with R"
 author: "George Williams"
 date: "March 2, 2017"
 output: html_document
@@ -7,24 +7,125 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(parallel)     # parallel computation
+library(doParallel)   # parallel computation
+library(caret)        # Modeling
+library(randomForest) # Random Forests
+library(RRF)          # Regulaized Random Forests
+library(e1071)        # Support vector machines
+library(tidyverse)    # data manipulation and plotting
+library(knitr)        # to use the kable function
 ```
 
-## R Markdown
+## Executive Summary
+A data set of accelerometer data measured while young men are lifting weights has been made available by researchers at the Pontifical Catholic University of Rio de Janeiro.  This data set has been used to create a predictive model which allows one to assess the form of the weight lifters.  The Random Forest model prepared in this work appears to be comparable to, or perhaps somewhat more accurate than, the model prepared by the original researchers.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## Introduction
+Human Activity Recognition using wearable accelerometers has become an active area of research in recent years. This project attempts to classify the quality of the form a subject is using while lifting weights.  The data set includes a number of sensor measurements taken while six different young men lifted weights.  Each set of sensor measurements is classified into one of 5 groups:
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+- Class A: according to the specification
+- Class B: throwing the elbows to the front
+- Class C: lifting the dumbbell only halfway
+- Class D: lowering the dumbbell only halfway
+- Class E: throwing the hips to the front
 
-```{r cars}
-summary(cars)
+The product of this work will be a model which classifies the weight lifting form based on a set a sensor measurements.  This model will be used to make predictions with the testing data set.  The data set is available from [Groupware@LES](http://groupware.les.inf.puc-rio.br/static/WLE/WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv) and is described in an associated paper.^[Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. ["Qualitative Activity Recognition of Weight Lifting Exercises"](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.]
+
+## Loading and Examination of Data
+The data are loaded directly from the Coursera website.  There are two data sets: a training set and a testing set.  Looking at the training data showed four basic data types:
+
+1. Descriptive data
+2. Measured data
+3. Derived statistical summaries of data measured over certain windows
+4. Output classification data
+
+The testing data set is similar, except that it has no derived data, nor any output classification data.  The first step in data pre-processing is to remove the derived data and the descriptive data, as they will not be useful in preparing a predictive model.  This reduces our predictor data set to 52 features.
+
+```{r data, echo=TRUE, results='hide', warning=FALSE, message=FALSE, cache=TRUE}
+training <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"))
+testing <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"))
+output.col <- grep("classe",names(training),perl=TRUE)
+meas.pattern <- "^(roll|pitch|yaw|total|gyros|accel|magnet)"
+measured.cols <- grep(meas.pattern, names(training), perl=TRUE)
+train.meas <- training[,measured.cols]
+test.meas <- testing[,measured.cols]
+train.out <-  training[,output.col]
 ```
 
-## Including Plots
+The next step will be to check if any of the predictor variables are excessively correlated, and filter out the offending data.  This code removes variables whose correlation coefficient is more than 0.9 with a retained variable.  This reduces our predictor data set to 45 features.
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r filter, echo=TRUE, results='hide', warning=FALSE, message=FALSE, cache=TRUE}
+correlationMatrix <- cor(train.meas)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.9)
+# print indexes and names of highly correlated attributes
+# [1] 10  1  9  8 31 33 18
+# [1] "accel_belt_z"     "roll_belt"        "accel_belt_y"     "accel_belt_x"     "gyros_dumbbell_x"
+# [6] "gyros_dumbbell_z" "gyros_arm_x"
+train.meas.filt <- train.meas[,-highlyCorrelated]
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Modeling
+Next we will model the data.  Because the calculation takes a very long time, this code will actually load previously saved results, rather than perform the calculation.  The model chosen is a Regularized Random Forest(RRF).^[Houtao Deng, George Runger, ["Feature Selection via Regularized Trees"](https://fd03118b-a-62cb3a1a-s-sites.googlegroups.com/site/houtaodeng/publications/FSRegularizedTrees.pdf?attachauth=ANoY7cr275oIg_bj0jc0ZLWEV_8eCUjK52aofSsPQ8GgIIQwB7r4oio6-oRNtr46eGoF5f-6kI0f8FadsFXKb2xTU_PHjHZ51fpstuMwqRUHLRZfFru7-X0Z1H33zQG3kgir87wE_BncH74xmCsXXdm8VXfkNzHU5HKPjzRj4ImEE0o802sZUaYcSLW1KXce34LdtBic8cQtO5XXXtKXVRvi8TAhgNtNwfgw7rzyappkKleW_w1vbb8%3D&attredirects=0), The 2012 International Joint Conference on Neural Networks (IJCNN), IEEE, 2012.] 
+
+From the RRF author's [website:](https://sites.google.com/site/houtaodeng/rrf)
+
+>The relationship between RRF and RF is similar to the relationship between LASSO and ordinary regression.  RRF is good for feature subset selection. The variables with non-zero importance scores are selected.  RF produces an importance score for each variable. But it does not provide a feature subset.
+
+In the calculation below, the data is scaled in a pre-processing step.  Repeated cross validation has been chosen:  ten fold cross validation is performed three times.
+
+```{r train_model, echo=TRUE, results='hide', warning=FALSE, message=FALSE, cache=TRUE}
+set.seed(24601)
+calc_rrf <- FALSE
+if(calc_rrf){
+    cluster <- makeCluster(4) # because more than 4 causes too much swap paging
+    registerDoParallel(cluster)
+    control <- trainControl(method="repeatedcv", number=10, repeats=3, allowParallel=TRUE)
+    # train the model
+    model_rrf <- train(x=train.meas.filt, y=train.out , method="RRFglobal", preProcess="scale", trControl=control)
+    stopCluster(cluster)
+    registerDoSEQ()
+    save(model_rrf, file="model_rrf.RData")}else{
+        load("model_rrf.RData")}
+```
+
+## Modeling Results
+The results of the modeling are presented below.  The first box shows how the model was selected and the second box shows details of the final model.  It can be seen that the **estimated out of sample error rate is 0.84%**.  Although RRF has the ability to select a reduced feature set, in this case the full set was selected.  This is shown in the "coefReg" column.  A value of less than 1 implies a reduced feature set, but all of the reduced feature cases tried had a lower cross-validated accuracy than the full set.  The results indicate that it might be worth the effort to try a new optimization grid more skewed towards larger coefficients.
+
+```{r model_results, echo=FALSE, results='markup', warning=FALSE, message=FALSE, cache=TRUE}
+model_rrf
+model_rrf$finalModel
+```
+
+The figures below compare the quality of the model obtained with this work to that of the group which conducted the experiments and wrote the paper describing their work.  The first table is a normalized confusion matrix from the website where the data was obtained.  The second table is a comparable normalized confusion matrix using the model created from this work.
+
+```{r model_norm_cm, echo=FALSE, results='markup', warning=FALSE, message=FALSE, cache=TRUE}
+puc_rio_norm_cm <- data.frame(A=c(0.78,0.05, 0.03, 0.02, 0.00),
+                          B=c(0.07,0.74, 0.09, 0.03, 0.08),
+                          C=c(0.06,0.06, 0.77, 0.08, 0.00),
+                          D=c(0.07,0.02, 0.08, 0.86, 0.13),
+                          E=c(0.01,0.13, 0.04, 0.00, 0.79))
+rownames(puc_rio_norm_cm) <- colnames(puc_rio_norm_cm)
+
+kable(as.matrix(puc_rio_norm_cm),digits=3,caption="Normalized Confusion Matrix for the model developed by the creators of the data set")
+
+norm_cm <- model_rrf$finalModel$confusion[,1:5] / rowSums(model_rrf$finalModel$confusion[,1:5])
+kable(norm_cm,digits=3,caption="Normalized Confusion Matrix for the model developed in this work")
+# norm_cm_heatmap <- heatmap(norm_cm, Rowv=NA, Colv=NA, col = heat.colors(256), scale="column", margins=c(5,10))
+# round(norm_cm,3)
+
+```
+
+
+
+## Predictions
+The code below makes predictions that will be used for the second part of the assignment.
+
+```{r model_pred, echo=TRUE, results='markup', warning=FALSE, message=FALSE, cache=TRUE}
+pred.rrf.test <- predict(model_rrf, test.meas)
+names(pred.rrf.test) <- 1:length(pred.rrf.test)
+pred.rrf.test
+```
+
+## Conclusions
+The Weight Lifting Exercises Data set provides a good basis for developing a Random Forest predictive model.  The model can do a good job of identifying how an activity is being done, if the proper training data is available.  Unfortunately, people can be very creative in how to do an activity incorrectly.  Developing a complete set of training data for all possible mistakes could be a very arduous task.
+
